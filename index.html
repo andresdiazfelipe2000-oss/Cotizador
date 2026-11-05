@@ -12,10 +12,7 @@
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="firebase-config.js"></script>
+<script src="api-config.js"></script>
 <style>
 :root{
   --paper:#F3ECE2; --sheet:#FFFCF7; --field:#FFFFFF; --ink:#43291A; --ink-2:#7A5F4C; --line:#E2D3C1; --soft:#F8F1E7;
@@ -299,7 +296,7 @@ dialog::backdrop{background:rgba(8,14,28,.55)}
     <a href="#ajustes" data-admin>Ajustes</a>
     <a href="#usuarios" data-admin>Usuarios</a>
   </nav>
-  <span id="who" class="who" hidden></span><span id="sync" class="sync">Conectando…</span><button id="btnLogout" class="btn sm ghost" type="button" hidden>Salir</button>
+  <span id="who" class="who" hidden></span><span id="sync" class="sync">Conectando…</span><button id="btnPwd" class="btn sm ghost" type="button" hidden>Contraseña</button><button id="btnLogout" class="btn sm ghost" type="button" hidden>Salir</button>
 </header>
 <main id="app"></main>
 <div id="printDoc"></div>
@@ -429,7 +426,7 @@ function saveLocal(){if(state.mode!=="local")return;try{localStorage.setItem(LS_
 
 async function persist(kind,obj,del){
   const coll={cliente:"clientes",cotizacion:"cotizaciones"}[kind];
-  if(state.mode==="firebase"&&fbDb)return fbPersist(kind,obj,del);
+  if(state.mode==="sheets")return apiPersist(kind,obj,del);
   if(state.mode==="supabase"&&sb){
     const table=kind==="ajustes"?"config":coll;const id=kind==="ajustes"?"ajustes":obj.id;
     try{
@@ -460,7 +457,7 @@ function sbConfig(){
   return null;
 }
 function connect(){
-  if(!inClaude){startFirebase();return;}
+  if(!inClaude){startSheets();return;}
   window.claude.use("downloads").then(d=>{downloads=d;}).catch(()=>{});
   window.claude.use("db").then(d=>{
     if(!d)return;db=d;state.mode="db";
@@ -708,7 +705,7 @@ function calcQuote(Q){
    NAVEGACIÓN
    ============================================================ */
 const VIEWS=["cotizar","cotizaciones","clientes","panel","ajustes","usuarios"];
-function currentView(){const h=location.hash.replace("#","");let v=VIEWS.includes(h)?h:"cotizar";if(!isAdmin()&&!["cotizar","cotizaciones"].includes(v))v="cotizar";if(v==="usuarios"&&!fbApp)v="cotizar";return v;}
+function currentView(){const h=location.hash.replace("#","");let v=VIEWS.includes(h)?h:"cotizar";if(!isAdmin()&&!["cotizar","cotizaciones"].includes(v))v="cotizar";if(v==="usuarios"&&!nube)v="cotizar";return v;}
 function render(){
   if(location.hash.startsWith("#ver="))return renderShared();
   document.body.classList.remove("shared");
@@ -1088,7 +1085,7 @@ function refreshCalc(){
     <div class="tot"><span>Utilidad antes de impuestos</span><b class="num ${R.util>=0?"pos":"neg"}">${fmt(R.util)}</b></div>
     <div class="tot"><span>Margen real</span><b class="num">${pct(R.subtotal?R.util/R.subtotal:0)}</b></div>`;
 }
-function nextNumero(){if(state.mode==="firebase")return "COT-"+String(contador+1).padStart(4,"0");const n=state.cotizaciones.map(q=>parseInt(String(q.numero||"").replace(/\D/g,""),10)||0);return "COT-"+String((n.length?Math.max(...n):0)+1).padStart(4,"0");}
+function nextNumero(){if(state.mode==="sheets")return "COT-"+String(contador+1).padStart(4,"0");const n=state.cotizaciones.map(q=>parseInt(String(q.numero||"").replace(/\D/g,""),10)||0);return "COT-"+String((n.length?Math.max(...n):0)+1).padStart(4,"0");}
 function buildQuoteRecord(){
   const R=calcQuote(draft);const cli=getClient(draft.clienteId);const now=new Date().toISOString();
   return {id:draft.id||uid(),numero:draft.numero||nextNumero(),fecha:draft.fecha||now,actualizado:now,
@@ -1101,7 +1098,7 @@ function buildQuoteRecord(){
 async function saveDraft(quiet){
   if(!draft.items.length){toast("Agrega al menos un trabajo antes de guardar.");return false;}
   if(calcQuote(draft).errores){toast("Hay trabajos que no se pueden ejecutar. Corrígelos antes de guardar.");return false;}
-  if(state.mode==="firebase"&&!draft.numero){try{draft.numero=await reserveNumero();}catch(e){toast("No se pudo asignar el número: "+fbErr(e));return false;}}
+  if(state.mode==="sheets"&&!draft.numero){try{draft.numero=await reserveNumero();}catch(e){toast("No se pudo asignar el número: "+apiErr(e));return false;}}
   const rec=buildQuoteRecord();
   const ok=await persist("cotizacion",rec);
   if(ok){draft.id=rec.id;draft.numero=rec.numero;draft.fecha=rec.fecha;refreshCalc();if(!quiet)toast(`Cotización ${rec.numero} guardada`);}
@@ -1202,11 +1199,11 @@ function renderHistorial(){
   <section class="panel"><div class="toolbar">
     <label class="f"><span>Buscar</span><input id="hQ" value="${esc(F.q)}" placeholder="Número, cliente o documento"></label>
     <label class="f"><span>Estado</span><select id="hE"><option value="">Todos</option>${Object.entries(ESTADOS).map(([k,v])=>`<option value="${k}" ${F.estado===k?"selected":""}>${v}</option>`).join("")}</select></label></div>
-  ${list.length?`<div class="tw"><table class="t"><thead><tr><th>Número</th><th>Fecha</th><th>Cliente</th><th>Trabajos</th><th class="r">Total</th>${isAdmin()?`<th class="r">Utilidad</th>`:""}<th>Estado</th>${fbApp?`<th>Creada por</th>`:""}<th></th></tr></thead><tbody>
+  ${list.length?`<div class="tw"><table class="t"><thead><tr><th>Número</th><th>Fecha</th><th>Cliente</th><th>Trabajos</th><th class="r">Total</th>${isAdmin()?`<th class="r">Utilidad</th>`:""}<th>Estado</th>${nube?`<th>Creada por</th>`:""}<th></th></tr></thead><tbody>
   ${list.map(c=>`<tr><td><b>${esc(c.numero)}</b></td><td>${fdate(c.fecha)}</td><td>${esc(c.cliente?.nombre)}</td>
     <td>${[...new Set((c.items||[]).map(i=>SERVICIOS[i.svc]?.nombre||i.svc))].map(s=>`<span class="chip">${esc(s)}</span>`).join("")}</td>
     <td class="r num">${fmt(c.total)}</td>${isAdmin()?`<td class="r num">${fmt(c.util)}</td>`:""}
-    <td>${true?`<select class="st" data-st="${esc(c.id)}" data-v="${esc(c.estado)}" aria-label="Estado de ${esc(c.numero)}">${Object.entries(ESTADOS).map(([k,v])=>`<option value="${k}" ${c.estado===k?"selected":""}>${v}</option>`).join("")}</select>`:`<span class="chip">${esc(ESTADOS[c.estado]||c.estado)}</span>`}</td>${fbApp?`<td class="small">${esc(c.ownerNombre||"")}</td>`:""}
+    <td>${true?`<select class="st" data-st="${esc(c.id)}" data-v="${esc(c.estado)}" aria-label="Estado de ${esc(c.numero)}">${Object.entries(ESTADOS).map(([k,v])=>`<option value="${k}" ${c.estado===k?"selected":""}>${v}</option>`).join("")}</select>`:`<span class="chip">${esc(ESTADOS[c.estado]||c.estado)}</span>`}</td>${nube?`<td class="small">${esc(c.ownerNombre||"")}</td>`:""}
     <td class="r"><div class="btns" style="justify-content:flex-end;flex-wrap:nowrap">
       <button class="btn sm" data-open="${esc(c.id)}">Abrir</button><button class="btn sm ghost" data-pdf="${esc(c.id)}">PDF</button>${inClaude?"":`<button class="btn sm ghost" data-link="${esc(c.id)}">Enlace</button>`}
       <button class="btn sm ghost" data-copy="${esc(c.id)}">Copiar</button>${isAdmin()||c.estado==="borrador"?`<button class="btn sm ghost danger" data-rm="${esc(c.id)}">Eliminar</button>`:""}</div></td></tr>`).join("")}
@@ -1313,7 +1310,7 @@ function renderAjustes(){
       <label class="f"><span>Clave pública (anon)</span><input id="cKey" value="${esc(sbConfig()&&sbConfig().key||"")}" autocomplete="off"></label></div>
       <div class="btns" style="margin-top:12px"><button class="btn primary" type="button" id="cSave">Conectar</button></div>`}</section>`}
   <section class="panel"><h2>Respaldo</h2><p class="muted" style="margin-top:0">Descarga en un archivo todos los clientes, cotizaciones y ajustes, o recupéralos desde uno.</p>
-    <div class="btns"><button class="btn" type="button" id="bExp">Descargar respaldo</button>${state.mode==="firebase"?`<button class="btn" type="button" id="cMigrate">Subir a la nube lo guardado en este navegador</button>`:""}<label class="btn" for="bImp">Restaurar desde un archivo</label><input type="file" id="bImp" accept=".json,application/json" hidden></div></section>
+    <div class="btns"><button class="btn" type="button" id="bExp">Descargar respaldo</button>${state.mode==="sheets"?`<button class="btn" type="button" id="cMigrate">Subir a la nube lo guardado en este navegador</button>`:""}<label class="btn" for="bImp">Restaurar desde un archivo</label><input type="file" id="bImp" accept=".json,application/json" hidden></div></section>
   <section class="panel"><h2>Materiales por área (precio del proveedor) <button class="btn sm" id="sAdd" type="button">Agregar material</button></h2>
     <p class="muted" style="margin-top:0">Escribe lo que cobra el proveedor por una lámina y sus medidas. Al cotizar, se cobra solo el área de la pieza que pide el cliente; el resto queda en stock.</p>
     <div class="tw"><table class="t"><thead><tr><th>Material</th><th class="r">Precio de la lámina</th><th class="r">Ancho (cm)</th><th class="r">Alto (cm)</th><th>Tipo</th><th class="r">Costo por cm²</th><th></th></tr></thead><tbody>
@@ -1541,80 +1538,60 @@ function exportCSV(list){
 }
 
 /* ============================================================
-   FIREBASE: inicio de sesión, roles y base de datos en la nube
+   GOOGLE SHEETS: inicio de sesión, roles y datos en Google Drive
    ============================================================ */
-let authBusy=false,fbApp=null,fbAuth=null,fbDb=null,fbUser=null,perfil=null,fbSubs=[],gate={paso:"cargando"},contador=0,publico=null;
-const isAdmin=()=>!fbApp||(perfil&&perfil.rol==="admin");
-function fbConfig(){
-  const w=window.TERCIO_FIREBASE;if(w&&w.apiKey&&w.projectId)return w;
-  try{const c=JSON.parse(localStorage.getItem("tc_fb_cfg")||"null");if(c&&c.apiKey&&c.projectId)return c;}catch(e){}
-  return null;}
-function parseFbConfig(txt){
-  const o={};for(const k of["apiKey","authDomain","projectId","storageBucket","messagingSenderId","appId","measurementId"]){
-    const m=String(txt).match(new RegExp(k+"\\s*[:=]\\s*[\"']([^\"']+)[\"']"));if(m)o[k]=m[1];}
-  return o.apiKey&&o.projectId&&o.appId?o:null;}
-function fbErr(e){const c=e&&e.code||"";
-  const M={"auth/invalid-credential":"Correo o contraseña incorrectos.","auth/wrong-password":"Correo o contraseña incorrectos.","auth/user-not-found":"No existe una cuenta con ese correo.",
-    "auth/invalid-email":"El correo no es válido.","auth/email-already-in-use":"Ya existe una cuenta con ese correo.","auth/weak-password":"La contraseña debe tener al menos 6 caracteres.",
-    "auth/too-many-requests":"Demasiados intentos. Espera unos minutos.","auth/network-request-failed":"Sin conexión a internet.",
-    "auth/operation-not-allowed":"Falta activar el inicio de sesión con correo y contraseña en Firebase (Authentication, Sign-in method).",
-    "permission-denied":"Firebase no dio permiso. Revisa que pegaste las reglas de seguridad (firestore.rules).","unavailable":"Sin conexión con la base de datos. Revisa internet."};
-  return M[c]||(e&&e.message)||"Ocurrió un error.";}
-function setWho(){const w=$("#who"),b=$("#btnLogout"),s=$("#sync");
-  if(state.mode==="firebase"&&perfil){w.hidden=false;w.innerHTML=`<b>${esc(perfil.nombre||perfil.email)}</b><small>${perfil.rol==="admin"?"Administrador":"Empleado"}</small>`;b.hidden=false;s.textContent="En la nube";s.classList.add("cloud");}
-  else{w.hidden=true;b.hidden=true;}
+let nube=null,perfil=null,gate={paso:"cargando"},contador=0,publico=null,pollT=null,ultimaFirma="";
+const isAdmin=()=>!nube||(perfil&&perfil.rol==="admin");
+const URL_OK=/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec\/?$/;
+function apiUrl(){const w=window.TERCIO_API;if(w&&URL_OK.test(w))return w;try{const c=localStorage.getItem("tc_api");if(c&&URL_OK.test(c))return c;}catch(e){}return null;}
+function token(){try{return localStorage.getItem("tc_token")||"";}catch(e){return"";}}
+function setToken(t){try{t?localStorage.setItem("tc_token",t):localStorage.removeItem("tc_token");}catch(e){}}
+async function api(action,data={},conToken=true){
+  const url=nube||apiUrl();if(!url)throw new Error("Falta la dirección de la base de datos.");
+  let r;
+  try{r=await fetch(url,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({...data,action,token:conToken?token():undefined}),redirect:"follow"});}
+  catch(e){throw new Error("Sin conexión con Google Sheets. Revisa internet e intenta de nuevo.");}
+  let j;try{j=await r.json();}catch(e){throw new Error("Google Sheets no respondió como se esperaba. Revisa que la aplicación web esté implementada con acceso para Cualquier persona.");}
+  if(!j.ok){if(conToken&&/Sesión vencida/.test(j.error||""))logoutLocal("Tu sesión venció. Ingresa de nuevo.");throw new Error(j.error||"Error en la base de datos.");}
+  return j;}
+const apiErr=e=>(e&&e.message)||"Ocurrió un error.";
+function setWho(){const w=$("#who"),b=$("#btnLogout"),p=$("#btnPwd"),s=$("#sync");
+  if(state.mode==="sheets"&&perfil){w.hidden=false;w.innerHTML=`<b>${esc(perfil.nombre||perfil.email)}</b><small>${perfil.rol==="admin"?"Administrador":"Empleado"}</small>`;b.hidden=false;p.hidden=false;s.textContent="Google Sheets";s.classList.add("cloud");}
+  else{w.hidden=true;b.hidden=true;p.hidden=true;}
   $$("#nav a[data-admin]").forEach(a=>a.hidden=!isAdmin());
   $("#nav").hidden=!!needsLogin;}
-function stopSubs(){fbSubs.forEach(u=>{try{u();}catch(e){}});fbSubs=[];}
-async function startFirebase(){
-  needsLogin=true;
-  if(!window.firebase||!firebase.initializeApp){gate={paso:"error",msg:"No cargó Firebase. Revisa la conexión a internet y recarga la página."};render();return;}
-  const cfg=fbConfig();if(!cfg){gate={paso:"config"};render();return;}
-  try{fbApp=firebase.apps.length?firebase.app():firebase.initializeApp(cfg);fbAuth=firebase.auth();fbDb=firebase.firestore();}
-  catch(e){gate={paso:"config",msg:"Los datos de Firebase no son válidos: "+fbErr(e)};render();return;}
-  fbDb.doc("config/publico").onSnapshot(s=>{publico=s.exists?s.data():null;if(needsLogin&&gate.paso==="login")render();},()=>{});
-  fbAuth.onAuthStateChanged(async u=>{
-    if(authBusy)return;
-    stopSubs();fbUser=u;perfil=null;state.mode="local";
-    try{
-      const ini=await fbDb.doc("sistema/inicial").get();
-      if(!ini.exists){gate={paso:"admin"};needsLogin=true;setWho();render();return;}
-      if(!u){gate={paso:"login"};needsLogin=true;setWho();render();return;}
-      const pd=await fbDb.doc("users/"+u.uid).get();
-      if(!pd.exists||pd.data().activo!==true){gate={paso:"inactivo"};needsLogin=true;setWho();render();return;}
-      perfil={...pd.data(),uid:u.uid};
-    }catch(e){gate={paso:"error",msg:fbErr(e)};needsLogin=true;setWho();render();return;}
-    enterFirebase();
-  });
+function logoutLocal(msg){setToken("");clearInterval(pollT);perfil=null;state.mode="local";state.clientes=[];state.cotizaciones=[];state.usuarios=[];draft=null;
+  needsLogin=true;gate={paso:"login",msg:msg||""};setWho();render();}
+async function startSheets(){
+  needsLogin=true;const url=apiUrl();if(!url){gate={paso:"config"};render();return;}
+  nube=url;gate={paso:"cargando"};render();
+  try{const e=await api("estado",{},false);publico={empresa:e.empresa};
+    if(!e.configurado){gate={paso:"admin"};render();return;}
+    if(!token()){gate={paso:"login"};render();return;}
+    await cargarNube(true);
+  }catch(x){if(!token()&&gate.paso==="login")return;gate={paso:"error",msg:apiErr(x)};render();}
 }
-function enterFirebase(){
-  state.mode="firebase";needsLogin=false;state.clientes=[];state.cotizaciones=[];state.usuarios=[];draft=null;settingsDraft=null;settingsDirty=false;
-  if(!isAdmin())showInternal=false;
-  const onErr=e=>toast(fbErr(e));
-  const mine=c=>fbDb.collection(c);
-  fbSubs.push(mine("clientes").onSnapshot(s=>{state.clientes=s.docs.map(d=>({...d.data(),id:d.id}));refreshFromData();},onErr));
-  fbSubs.push(mine("cotizaciones").onSnapshot(s=>{state.cotizaciones=s.docs.map(d=>({...d.data(),id:d.id}));refreshFromData();},onErr));
-  fbSubs.push(fbDb.doc("config/ajustes").onSnapshot(s=>{if(s.exists){const d=s.data();state.settings=merge(DEFAULTS,d);
-      for(const k of["productos","sustratos"])if(Array.isArray(d[k]))state.settings[k]=d[k];}
-    if(!settingsDirty)settingsDraft=null;refreshFromData();},onErr));
-  fbSubs.push(fbDb.doc("contadores/cotizaciones").onSnapshot(s=>{contador=s.exists?(+s.data().ultimo||0):0;refreshFromData();},()=>{}));
-  if(isAdmin())fbSubs.push(fbDb.collection("users").onSnapshot(s=>{state.usuarios=s.docs.map(d=>({...d.data(),uid:d.id}));if(currentView()==="usuarios")render();},onErr));
-  setWho();if(!location.hash||!VIEWS.includes(location.hash.slice(1)))location.hash="#cotizar";render();
+async function cargarNube(primera){
+  const r=await api("cargar");
+  const firma=JSON.stringify([r.clientes,r.cotizaciones,r.usuarios,r.ajustes,r.contador,r.perfil]);
+  if(!primera&&firma===ultimaFirma)return;ultimaFirma=firma;
+  perfil=r.perfil;contador=+r.contador||0;
+  state.clientes=r.clientes||[];state.cotizaciones=r.cotizaciones||[];state.usuarios=r.usuarios||[];
+  if(r.ajustes){state.settings=merge(DEFAULTS,r.ajustes);for(const k of["productos","sustratos"])if(Array.isArray(r.ajustes[k]))state.settings[k]=r.ajustes[k];}
+  if(primera){state.mode="sheets";needsLogin=false;draft=null;settingsDraft=null;settingsDirty=false;if(!isAdmin())showInternal=false;setWho();
+    if(!location.hash||!VIEWS.includes(location.hash.slice(1)))location.hash="#cotizar";render();
+    clearInterval(pollT);pollT=setInterval(()=>{if(document.visibilityState==="visible"&&state.mode==="sheets")cargarNube(false).catch(()=>{});},30000);}
+  else{if(!isAdmin()&&!["cotizar","cotizaciones"].includes(currentView()))location.hash="#cotizar";setWho();if(!settingsDirty)settingsDraft=null;refreshFromData();}
 }
-async function reserveNumero(){
-  const ref=fbDb.doc("contadores/cotizaciones");
-  const n=await fbDb.runTransaction(async t=>{const s=await t.get(ref);const v=(s.exists?(+s.data().ultimo||0):0)+1;if(s.exists)t.update(ref,{ultimo:v});else t.set(ref,{ultimo:v});return v;});
-  return "COT-"+String(n).padStart(4,"0");}
-async function fbPersist(kind,obj,del){
+async function reserveNumero(){const r=await api("reservarNumero");const n=parseInt(String(r.numero).replace(/\D/g,""),10)||0;contador=Math.max(contador,n);return r.numero;}
+async function apiPersist(kind,obj,del){
   const coll={cliente:"clientes",cotizacion:"cotizaciones"}[kind];
   try{
-    if(kind==="ajustes"){await fbDb.doc("config/ajustes").set(clone(obj));
-      await fbDb.doc("config/publico").set({empresa:obj.empresa.nombre},{merge:true});}
-    else if(del)await fbDb.collection(coll).doc(obj.id).delete();
-    else{const o=clone(obj);if(!o.ownerUid){o.ownerUid=fbUser.uid;o.ownerNombre=perfil.nombre||perfil.email;}
-      await fbDb.collection(coll).doc(o.id).set(o);obj.ownerUid=o.ownerUid;obj.ownerNombre=o.ownerNombre;}
-    applyLocal(kind,obj,del,coll);return true;
-  }catch(e){toast("No se pudo guardar: "+fbErr(e));return false;}
+    if(kind==="ajustes"){await api("guardarAjustes",{dato:clone(obj)});state.settings=clone(obj);return true;}
+    if(del){await api(kind==="cliente"?"borrarCliente":"borrarCotizacion",{id:obj.id});applyLocal(kind,obj,true,coll);return true;}
+    const r=await api(kind==="cliente"?"guardarCliente":"guardarCotizacion",{dato:clone(obj)});
+    const s=r.dato||obj;obj.ownerUid=s.ownerUid;obj.ownerNombre=s.ownerNombre;applyLocal(kind,s,false,coll);return true;
+  }catch(e){toast("No se pudo guardar: "+apiErr(e));return false;}
 }
 
 /* ---------- Pantallas de entrada ---------- */
@@ -1626,29 +1603,29 @@ function renderAuthGate(){
   $$("#nav a").forEach(a=>a.setAttribute("aria-current","false"));setWho();
   const app=$("#app");app.onclick=null;app.oninput=null;app.onchange=null;app.onpointerdown=null;
   const g=gate.paso;
-  if(g==="cargando"){app.innerHTML=gateShell("Cargando","Conectando con la base de datos…","");return;}
-  if(g==="error"){app.innerHTML=gateShell("No se pudo conectar",esc(gate.msg||""),`<button class="btn primary" type="button" id="gRe">Reintentar</button>`);$("#gRe").onclick=()=>location.reload();return;}
-  if(g==="inactivo"){app.innerHTML=gateShell("Cuenta sin acceso","Tu cuenta no está activa o no tiene un rol asignado. Pídele al administrador que la active.",`<button class="btn" type="button" id="gOut">Salir</button>`);$("#gOut").onclick=()=>fbAuth.signOut();return;}
+  if(g==="cargando"){app.innerHTML=gateShell("Cargando","Conectando con Google Sheets…","");return;}
+  if(g==="error"){app.innerHTML=gateShell("No se pudo conectar",esc(gate.msg||""),`<div class="btns"><button class="btn primary" type="button" id="gRe">Reintentar</button><button class="btn ghost" type="button" id="gCfg">Cambiar la dirección de la base de datos</button></div>`);
+    $("#gRe").onclick=()=>location.reload();$("#gCfg").onclick=()=>{gate={paso:"config"};render();};return;}
   if(g==="config")return renderSetupConfig();
   if(g==="admin")return renderSetupAdmin();
-  if(g==="registro")return renderRegistro();
-  return renderLoginFB();
+  return renderLoginSheets();
 }
 function renderSetupConfig(){
   const app=$("#app");
-  app.innerHTML=gateShell("Conectar con Firebase","Este paso se hace una sola vez. Pega aquí la configuración de tu proyecto de Firebase.",`
+  app.innerHTML=gateShell("Conectar con Google Sheets","Este paso se hace una sola vez. Pega la dirección de la aplicación web que publicaste desde la hoja de cálculo.",`
     ${gate.msg?`<p class="err">${esc(gate.msg)}</p>`:""}
-    <ol class="steps small"><li>En <b>console.firebase.google.com</b> abre tu proyecto, pulsa el ícono de engranaje y entra a <b>Configuración del proyecto</b>.</li>
-      <li>En <b>Tus apps</b> elige la app web (ícono &lt;/&gt;) y copia el bloque <b>firebaseConfig</b>.</li><li>Pégalo completo aquí abajo.</li></ol>
-    <label class="f"><span>Configuración de Firebase</span><textarea id="cfgTxt" rows="8" placeholder="const firebaseConfig = {&#10;  apiKey: &quot;...&quot;,&#10;  authDomain: &quot;...&quot;,&#10;  projectId: &quot;...&quot;,&#10;  ...&#10;};"></textarea></label>
-    <div class="err" id="cfgErr" role="alert"></div>
-    <div class="btns" style="margin-top:12px"><button class="btn primary" type="button" id="cfgOk">Conectar</button></div>
-    <div id="cfgOut"></div>`,true);
-  $("#cfgOk").onclick=()=>{const c=parseFbConfig($("#cfgTxt").value);if(!c){$("#cfgErr").textContent="No encontré apiKey, projectId y appId. Copia el bloque firebaseConfig completo.";return;}
-    try{localStorage.setItem("tc_fb_cfg",JSON.stringify(c));}catch(e){}
-    const file=`// Configuración de Firebase de Tercio Creativo\nwindow.TERCIO_FIREBASE = ${JSON.stringify(c,null,2)};\n`;
-    $("#cfgOut").innerHTML=`<div class="okbox"><b>Listo, este navegador ya quedó conectado.</b> Para que todos los equipos queden conectados sin repetir este paso, reemplaza el contenido del archivo <code>firebase-config.js</code> en GitHub por este texto:
-      <textarea readonly rows="9" id="cfgFile">${esc(file)}</textarea><div class="btns"><button class="btn sm" type="button" id="cfgCopy">Copiar texto</button><button class="btn sm primary" type="button" id="cfgGo">Continuar</button></div></div>`;
+    <label class="f"><span>Dirección de la aplicación web</span><input id="apiTxt" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"><span class="hint">Termina en /exec. La encuentras en Apps Script, Implementar, Gestionar implementaciones.</span></label>
+    <div class="err" id="apiErr" role="alert"></div>
+    <div class="btns" style="margin-top:12px"><button class="btn primary" type="button" id="apiOk">Probar y conectar</button></div>
+    <div id="apiOut"></div>`,true);
+  $("#apiOk").onclick=async()=>{const v=$("#apiTxt").value.trim();const err=$("#apiErr");err.textContent="";
+    if(!URL_OK.test(v)){err.textContent="La dirección debe empezar por https://script.google.com/macros/s/ y terminar en /exec.";return;}
+    nube=v;const b=$("#apiOk");b.disabled=true;
+    try{await api("estado",{},false);}catch(x){b.disabled=false;nube=null;err.textContent=apiErr(x);return;}
+    try{localStorage.setItem("tc_api",v);}catch(e){}
+    const file=`// Dirección de la base de datos (Google Sheets) de Tercio Creativo\nwindow.TERCIO_API = "${v}";\n`;
+    $("#apiOut").innerHTML=`<div class="okbox"><b>La conexión funciona y este navegador ya quedó conectado.</b> Para que todos los equipos queden conectados sin repetir este paso, reemplaza el contenido del archivo <code>api-config.js</code> en GitHub por este texto:
+      <textarea readonly rows="3" id="cfgFile">${esc(file)}</textarea><div class="btns"><button class="btn sm" type="button" id="cfgCopy">Copiar texto</button><button class="btn sm primary" type="button" id="cfgGo">Continuar</button></div></div>`;
     $("#cfgCopy").onclick=async()=>{try{await navigator.clipboard.writeText(file);toast("Texto copiado");}catch(e){$("#cfgFile").select();document.execCommand("copy");toast("Texto copiado");}};
     $("#cfgGo").onclick=()=>location.reload();};
 }
@@ -1676,49 +1653,39 @@ function renderSetupAdmin(){
     const miss=[];if(!g("emp"))miss.push("razón social");if(!g("nom"))miss.push("nombre");if(!g("email"))miss.push("correo");if(g("p1").length<6)miss.push("contraseña de 6 o más caracteres");
     if(miss.length){err.textContent="Falta: "+miss.join(", ")+".";return;}if(g("p1")!==g("p2")){err.textContent="Las contraseñas no coinciden.";return;}
     const btn=e.target.querySelector("[type=submit]");btn.disabled=true;
-    try{
-      authBusy=true;let u=fbAuth.currentUser;
-      if(!u||u.email!==g("email").toLowerCase())u=(await fbAuth.createUserWithEmailAndPassword(g("email"),g("p1"))).user;
-      const S=clone(DEFAULTS);Object.assign(S.empresa,{nombre:g("emp"),nit:g("nit"),direccion:g("dir"),ciudad:g("ciu"),telefono:g("tel"),correo:g("cor")});
-      const b=fbDb.batch();const now=new Date().toISOString();
-      b.set(fbDb.doc("users/"+u.uid),{nombre:g("nom"),email:g("email").toLowerCase(),rol:"admin",activo:true,creado:now});
-      b.set(fbDb.doc("sistema/inicial"),{adminUid:u.uid,fecha:now});
-      b.set(fbDb.doc("config/publico"),{empresa:g("emp")});
-      b.set(fbDb.doc("config/ajustes"),S);
-      await b.commit();toast("Administrador creado");location.reload();
-    }catch(x){authBusy=false;btn.disabled=false;err.textContent=fbErr(x);}};
+    const S=clone(DEFAULTS);Object.assign(S.empresa,{nombre:g("emp"),nit:g("nit"),direccion:g("dir"),ciudad:g("ciu"),telefono:g("tel"),correo:g("cor")});
+    try{const r=await api("setup",{admin:{nombre:g("nom"),email:g("email"),pass:g("p1")},ajustes:S},false);setToken(r.token);toast("Administrador creado");await cargarNube(true);}
+    catch(x){btn.disabled=false;err.textContent=apiErr(x);}};
 }
-function renderLoginFB(){
+function renderLoginSheets(){
   const app=$("#app");
   app.innerHTML=gateShell(esc(publico&&publico.empresa||"Tercio Creativo"),"Ingresa con el correo y la contraseña que te dio el administrador.",`
     <form id="lgF" class="grid" style="grid-template-columns:1fr" novalidate>
+      ${gate.msg?`<p class="err" style="margin:0">${esc(gate.msg)}</p>`:""}
       <label class="f"><span>Correo</span><input type="email" name="email" autocomplete="username" required></label>
       <label class="f"><span>Contraseña</span><input type="password" name="pass" autocomplete="current-password" required></label>
       <div class="err" id="lgErr" role="alert"></div>
       <button class="btn primary" type="submit">Ingresar</button>
-      <div class="btns"><button class="btn ghost sm" type="button" id="lgReset">Olvidé mi contraseña</button></div></form>`);
+      <p class="small muted" style="margin:0">¿Olvidaste la contraseña? Pídele al administrador que te asigne una nueva desde Usuarios.</p></form>`);
   $("#lgF").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const btn=e.target.querySelector("[type=submit]");btn.disabled=true;$("#lgErr").textContent="";
-    try{await fbAuth.signInWithEmailAndPassword(String(f.get("email")).trim(),String(f.get("pass")));}catch(x){$("#lgErr").textContent=fbErr(x);btn.disabled=false;}};
-  $("#lgReset").onclick=async()=>{const em=$('[name="email"]').value.trim();if(!em){$("#lgErr").textContent="Escribe tu correo y vuelve a pulsar Olvidé mi contraseña.";return;}
-    try{await fbAuth.sendPasswordResetEmail(em);toast("Te enviamos un correo para cambiar la contraseña");}catch(x){$("#lgErr").textContent=fbErr(x);}};
+    try{const r=await api("login",{email:String(f.get("email")).trim(),pass:String(f.get("pass"))},false);setToken(r.token);gate={paso:"cargando"};render();await cargarNube(true);}
+    catch(x){gate={paso:"login"};if($("#lgErr")){$("#lgErr").textContent=apiErr(x);btn.disabled=false;}else{render();toast(apiErr(x));}}};
 }
-function renderRegistro(){
-  const app=$("#app");
-  app.innerHTML=gateShell("Crear cuenta de cliente","Con tu cuenta puedes cotizar y ver tus cotizaciones.",`
-    <form id="rgF" novalidate><div class="grid wide">
-      <label class="f req"><span>Nombre completo o razón social</span><input name="nom"></label>
-      <label class="f"><span>Teléfono</span><input name="tel" inputmode="tel"></label>
-      <label class="f req"><span>Correo</span><input name="email" type="email" autocomplete="username"></label>
-      <label class="f req"><span>Contraseña</span><input name="p1" type="password" autocomplete="new-password"><span class="hint">Mínimo 6 caracteres</span></label>
-      <label class="f req"><span>Repite la contraseña</span><input name="p2" type="password" autocomplete="new-password"></label></div>
-      <div class="err" id="rgErr" role="alert"></div>
-      <div class="btns" style="margin-top:14px"><button class="btn primary" type="submit">Crear cuenta</button><button class="btn ghost" type="button" id="rgBack">Ya tengo cuenta</button></div></form>`,true);
-  $("#rgBack").onclick=()=>{gate={paso:"login"};render();};
-  $("#rgF").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const g=k=>String(f.get(k)||"").trim();const err=$("#rgErr");
-    if(!g("nom")||!g("email")){err.textContent="Falta el nombre o el correo.";return;}if(g("p1").length<6){err.textContent="La contraseña debe tener al menos 6 caracteres.";return;}if(g("p1")!==g("p2")){err.textContent="Las contraseñas no coinciden.";return;}
-    authBusy=true;try{const u=(await fbAuth.createUserWithEmailAndPassword(g("email"),g("p1"))).user;
-      await fbDb.doc("users/"+u.uid).set({nombre:g("nom"),email:g("email").toLowerCase(),telefono:g("tel"),rol:"empleado",activo:true,creado:new Date().toISOString()});
-      location.reload();}catch(x){authBusy=false;err.textContent=fbErr(x);if(fbAuth.currentUser)location.reload();}};
+function openPwdDialog(){
+  const dlg=$("#dlg");
+  dlg.innerHTML=`<form id="pwF" novalidate><div class="dlg-h"><h2 style="margin:0">Cambiar mi contraseña</h2><button class="btn ghost sm" type="button" id="pwX">Cerrar</button></div>
+    <div class="dlg-b"><div class="grid wide">
+      <label class="f"><span>Contraseña actual</span><input name="a" type="password" autocomplete="current-password"></label>
+      <label class="f"><span>Contraseña nueva</span><input name="n1" type="password" autocomplete="new-password"><span class="hint">Mínimo 6 caracteres</span></label>
+      <label class="f"><span>Repite la nueva</span><input name="n2" type="password" autocomplete="new-password"></label></div>
+      <div class="err" id="pwErr" role="alert"></div></div>
+    <div class="dlg-f"><button class="btn primary" type="submit">Guardar</button></div></form>`;
+  dlg.showModal();dlg.onchange=null;dlg.oninput=null;
+  dlg.onclick=e=>{if(e.target.id==="pwX")dlg.close();};
+  dlg.onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const err=$("#pwErr");
+    if(String(f.get("n1")).length<6){err.textContent="La contraseña nueva debe tener al menos 6 caracteres.";return;}
+    if(f.get("n1")!==f.get("n2")){err.textContent="Las contraseñas nuevas no coinciden.";return;}
+    try{await api("cambiarClave",{actual:String(f.get("a")),nueva:String(f.get("n1"))});dlg.close();toast("Contraseña cambiada");}catch(x){err.textContent=apiErr(x);}};
 }
 
 /* ---------- Usuarios (solo administradores) ---------- */
@@ -1736,28 +1703,28 @@ function renderUsuarios(){
       <button class="btn primary" type="submit" style="margin-top:12px">Crear usuario</button></form></section>
   <section class="panel"><h2>Usuarios registrados</h2>
     ${list.length?`<div class="tw"><table class="t"><thead><tr><th>Nombre</th><th>Correo</th><th>Rol</th><th>Acceso</th><th></th></tr></thead><tbody>
-    ${list.map(u=>`<tr><td><b>${esc(u.nombre)}</b>${u.telefono?`<div class="small muted">${esc(u.telefono)}</div>`:""}</td><td>${esc(u.email)}</td>
-      <td><select class="st" data-urol="${esc(u.uid)}" ${u.uid===fbUser.uid?"disabled":""}><option value="empleado" ${u.rol!=="admin"?"selected":""}>Empleado</option><option value="admin" ${u.rol==="admin"?"selected":""}>Administrador</option></select></td>
-      <td><label class="check small"><input type="checkbox" data-uact="${esc(u.uid)}" ${u.activo?"checked":""} ${u.uid===fbUser.uid?"disabled":""}> Activo</label></td>
-      <td class="r"><button class="btn sm ghost" type="button" data-urst="${esc(u.email)}">Enviar cambio de contraseña</button></td></tr>`).join("")}
-    </tbody></table></div>`:`<div class="empty"><b>Cargando usuarios</b></div>`}
-    <p class="small muted">Para quitarle el acceso a alguien, desmarca Activo: no podrá entrar aunque conozca su contraseña.</p></section>`;
+    ${list.map(u=>{const yo=perfil&&u.id===perfil.id;return`<tr><td><b>${esc(u.nombre)}</b>${u.telefono?`<div class="small muted">${esc(u.telefono)}</div>`:""}</td><td>${esc(u.email)}</td>
+      <td><select class="st" data-urol="${esc(u.id)}" ${yo?"disabled":""}><option value="empleado" ${u.rol!=="admin"?"selected":""}>Empleado</option><option value="admin" ${u.rol==="admin"?"selected":""}>Administrador</option></select></td>
+      <td><label class="check small"><input type="checkbox" data-uact="${esc(u.id)}" ${u.activo?"checked":""} ${yo?"disabled":""}> Activo</label></td>
+      <td class="r">${yo?`<span class="small muted">Tú</span>`:`<button class="btn sm ghost" type="button" data-urst="${esc(u.id)}" data-unom="${esc(u.nombre)}">Asignar contraseña nueva</button>`}</td></tr>`;}).join("")}
+    </tbody></table></div>`:`<div class="empty"><b>No hay usuarios todavía</b></div>`}
+    <p class="small muted">Para quitarle el acceso a alguien, desmarca Activo: no podrá entrar aunque conozca su contraseña. Los usuarios quedan en la pestaña Usuarios de la hoja de cálculo; las contraseñas se guardan cifradas.</p></section>`;
   const app=$("#app");app.oninput=null;
   $("#uF").onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const g=k=>String(f.get(k)||"").trim();const err=$("#uErr");err.textContent="";
     if(!g("nom")||!g("email")){err.textContent="Falta el nombre o el correo.";return;}if(g("pass").length<6){err.textContent="La contraseña debe tener al menos 6 caracteres.";return;}
     const btn=e.target.querySelector("[type=submit]");btn.disabled=true;
-    let sec=null;
-    try{sec=firebase.apps.find(a=>a.name==="secundaria")||firebase.initializeApp(fbConfig(),"secundaria");
-      const cr=await sec.auth().createUserWithEmailAndPassword(g("email"),g("pass"));const nu=cr.user.uid;await sec.auth().signOut();
-      await fbDb.doc("users/"+nu).set({nombre:g("nom"),email:g("email").toLowerCase(),telefono:g("tel"),rol:g("rol"),activo:true,creado:new Date().toISOString()});
-      toast(`Usuario ${g("email")} creado`);e.target.reset();
-    }catch(x){err.textContent=fbErr(x);}finally{btn.disabled=false;}};
+    try{const r=await api("crearUsuario",{nombre:g("nom"),email:g("email"),pass:g("pass"),telefono:g("tel"),rol:g("rol")});
+      state.usuarios.push(r.usuario);toast(`Usuario ${g("email")} creado`);renderUsuarios();}
+    catch(x){err.textContent=apiErr(x);btn.disabled=false;}};
+  const upd=(id,o)=>{const u=state.usuarios.find(x=>x.id===id);if(u)Object.assign(u,o);};
   app.onchange=async e=>{const t=e.target;
-    try{if(t.dataset.urol){await fbDb.doc("users/"+t.dataset.urol).update({rol:t.value});toast("Rol actualizado");}
-      if(t.dataset.uact){await fbDb.doc("users/"+t.dataset.uact).update({activo:t.checked});toast(t.checked?"Acceso activado":"Acceso desactivado");}
-    }catch(x){toast(fbErr(x));}};
+    try{if(t.dataset.urol){await api("actualizarUsuario",{id:t.dataset.urol,rol:t.value});upd(t.dataset.urol,{rol:t.value});toast("Rol actualizado");}
+      if(t.dataset.uact){await api("actualizarUsuario",{id:t.dataset.uact,activo:t.checked});upd(t.dataset.uact,{activo:t.checked});toast(t.checked?"Acceso activado":"Acceso desactivado");}
+    }catch(x){toast(apiErr(x));renderUsuarios();}};
   app.onclick=async e=>{const b=e.target.closest("button");if(!b||!b.dataset.urst)return;
-    try{await fbAuth.sendPasswordResetEmail(b.dataset.urst);toast("Correo enviado a "+b.dataset.urst);}catch(x){toast(fbErr(x));}};
+    const p=prompt(`Contraseña nueva para ${b.dataset.unom} (mínimo 6 caracteres):`);if(p===null)return;
+    if(p.length<6){toast("La contraseña debe tener al menos 6 caracteres.");return;}
+    try{await api("actualizarUsuario",{id:b.dataset.urst,nuevaClave:p});toast("Contraseña asignada. Entrégasela a "+b.dataset.unom);}catch(x){toast(apiErr(x));}};
 }
 
 /* ============================================================
@@ -1766,7 +1733,8 @@ function renderUsuarios(){
 loadLocal();
 inClaude=!!(window.claude&&typeof window.claude.use==="function");
 if(!inClaude)needsLogin=true;
-$("#btnLogout").onclick=async()=>{if(fbAuth){draft=null;await fbAuth.signOut();}else if(sb)await sb.auth.signOut();};
+$("#btnLogout").onclick=async()=>{if(nube){try{await api("logout");}catch(e){}logoutLocal();}else if(sb)await sb.auth.signOut();};
+$("#btnPwd").onclick=()=>openPwdDialog();
 if("serviceWorker" in navigator&&location.protocol==="https:")navigator.serviceWorker.register("sw.js").catch(()=>{});
 render();
 connect();
